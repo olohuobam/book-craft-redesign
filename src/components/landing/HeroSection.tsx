@@ -334,8 +334,8 @@ function StarfieldCanvas() {
     let stars: Star[] = []
 
     function init() {
-      W = canvas.width = window.innerWidth
-      H = canvas.height = window.innerHeight
+      W = canvas!.width = window.innerWidth
+      H = canvas!.height = window.innerHeight
       stars = Array.from({ length: 130 }, () => ({
         x: Math.random() * W, y: Math.random() * H,
         r: Math.random() * 1.2 + 0.2,
