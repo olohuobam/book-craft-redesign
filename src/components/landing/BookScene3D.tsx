@@ -1,283 +1,404 @@
 'use client'
 
-import { useRef, useState, useEffect, Suspense, useCallback } from 'react'
-import { Canvas, useFrame, useThree } from '@react-three/fiber'
+import { useRef, useState, Suspense } from 'react'
+import { Canvas, useFrame } from '@react-three/fiber'
 import { Environment, PerspectiveCamera } from '@react-three/drei'
 import * as THREE from 'three'
 
-// ── Single 3D Book ────────────────────────────────────────────────────────────
-interface Book3DProps {
-  position: [number, number, number]
-  baseRotation: [number, number, number]
+// ── OPEN BOOK (pulpit book at center) ────────────────────────────────────────
+function OpenBook({ scale = 1 }: { scale?: number }) {
+  const groupRef = useRef<THREE.Group>(null)
+  const leftPageRef = useRef<THREE.Group>(null)
+  const rightPageRef = useRef<THREE.Group>(null)
+  const pageFlipRef = useRef<THREE.Mesh>(null)
+
+  // pagePhase: 0=closed→opening, 1=open, 2=turning page, 3=next open
+  const phaseRef = useRef(0)
+  const phaseTimer = useRef(0)
+  const flipAngle = useRef(0)
+  const openAngle = useRef(-Math.PI * 0.5) // starts closed
+  const bobOffset = useRef(0)
+
+  const W = 1.1 * scale
+  const H = 1.5 * scale
+  const D = 0.06 * scale
+  const spineW = 0.06 * scale
+
+  const pageMat = new THREE.MeshStandardMaterial({ color: '#f8f3e8', roughness: 0.85, metalness: 0, side: THREE.DoubleSide })
+  const coverMat = new THREE.MeshStandardMaterial({ color: '#1d4ed8', roughness: 0.3, metalness: 0.15, side: THREE.DoubleSide })
+  const spineMat = new THREE.MeshStandardMaterial({ color: '#1e3a8a', roughness: 0.35 })
+  const lineMat = new THREE.MeshStandardMaterial({ color: '#c8b4a0', roughness: 1, transparent: true, opacity: 0.45 })
+  const goldMat = new THREE.MeshStandardMaterial({ color: '#c8973e', roughness: 0.2, metalness: 0.6, emissive: '#c8973e', emissiveIntensity: 0.3 })
+
+  useFrame(() => {
+    if (!groupRef.current || !leftPageRef.current || !rightPageRef.current) return
+    const t = performance.now() / 1000
+
+    // Gentle bob & float
+    bobOffset.current = Math.sin(t * 0.7) * 0.05
+    groupRef.current.position.y = bobOffset.current
+    groupRef.current.rotation.y = Math.sin(t * 0.25) * 0.06
+
+    phaseTimer.current += 0.016
+
+    if (phaseRef.current === 0) {
+      // Opening: swing both halves open
+      openAngle.current = THREE.MathUtils.lerp(openAngle.current, 0, 0.04)
+      leftPageRef.current.rotation.y = openAngle.current
+      rightPageRef.current.rotation.y = -openAngle.current
+
+      if (Math.abs(openAngle.current) < 0.02) {
+        phaseRef.current = 1
+        phaseTimer.current = 0
+        openAngle.current = 0
+        leftPageRef.current.rotation.y = 0
+        rightPageRef.current.rotation.y = 0
+      }
+    }
+
+    if (phaseRef.current === 1) {
+      // Hold open — reading
+      if (phaseTimer.current > 4.5) {
+        phaseRef.current = 2
+        phaseTimer.current = 0
+        flipAngle.current = 0
+      }
+    }
+
+    if (phaseRef.current === 2) {
+      // Page turn: right page flips from 0 → -PI with arc
+      const p = Math.min(phaseTimer.current / 1.5, 1)
+      const eased = p < 0.5 ? 2 * p * p : -1 + (4 - 2 * p) * p
+      flipAngle.current = -eased * Math.PI
+      if (pageFlipRef.current) {
+        pageFlipRef.current.rotation.y = flipAngle.current
+        // Arc the page upward during flip
+        pageFlipRef.current.position.y = Math.sin(eased * Math.PI) * 0.22 * scale
+      }
+      if (p >= 1) {
+        phaseRef.current = 3
+        phaseTimer.current = 0
+      }
+    }
+
+    if (phaseRef.current === 3) {
+      // Hold after page turn, then close and reopen
+      if (phaseTimer.current > 3.5) {
+        phaseRef.current = 0
+        openAngle.current = -Math.PI * 0.5
+        leftPageRef.current.rotation.y = -Math.PI * 0.5
+        rightPageRef.current.rotation.y = Math.PI * 0.5
+        if (pageFlipRef.current) {
+          pageFlipRef.current.rotation.y = 0
+          pageFlipRef.current.position.y = 0
+        }
+        phaseTimer.current = 0
+        flipAngle.current = 0
+      }
+    }
+  })
+
+  const lines = Array.from({ length: 8 }, (_, i) => i)
+
+  return (
+    <group ref={groupRef} position={[0, 0.1, 0]}>
+      {/* Spine */}
+      <mesh position={[0, 0, 0]}>
+        <boxGeometry args={[spineW, H, D]} />
+        <primitive object={spineMat} attach="material" />
+      </mesh>
+
+      {/* Gold spine accents */}
+      <mesh position={[0, H * 0.35, D / 2 + 0.001]}>
+        <planeGeometry args={[spineW * 0.6, 0.03 * scale]} />
+        <primitive object={goldMat} attach="material" />
+      </mesh>
+      <mesh position={[0, H * 0.35 - 0.06 * scale, D / 2 + 0.001]}>
+        <planeGeometry args={[spineW * 0.6, 0.015 * scale]} />
+        <primitive object={goldMat} attach="material" />
+      </mesh>
+
+      {/* ── LEFT HALF — hinges at spine ── */}
+      <group ref={leftPageRef} rotation={[0, -Math.PI * 0.5, 0]}>
+        <group position={[-W / 2, 0, 0]}>
+          {/* Cover back */}
+          <mesh position={[0, 0, -D / 2]}>
+            <planeGeometry args={[W, H]} />
+            <primitive object={coverMat} attach="material" />
+          </mesh>
+          {/* Page face */}
+          <mesh position={[0, 0, D / 2 - 0.001]}>
+            <planeGeometry args={[W * 0.94, H * 0.92]} />
+            <primitive object={pageMat} attach="material" />
+          </mesh>
+          {/* Decorative text lines */}
+          {lines.map(i => (
+            <mesh key={i} position={[-W * 0.05, H * 0.32 - i * 0.1 * scale, D / 2 + 0.002]}>
+              <planeGeometry args={[W * 0.72 - (i % 3) * 0.06 * scale, 0.018 * scale]} />
+              <primitive object={lineMat} attach="material" />
+            </mesh>
+          ))}
+          {/* Top edge */}
+          <mesh position={[0, H / 2, 0]} rotation={[Math.PI / 2, 0, 0]}>
+            <planeGeometry args={[W, D]} />
+            <primitive object={pageMat} attach="material" />
+          </mesh>
+        </group>
+      </group>
+
+      {/* ── RIGHT HALF — hinges at spine ── */}
+      <group ref={rightPageRef} rotation={[0, Math.PI * 0.5, 0]}>
+        <group position={[W / 2, 0, 0]}>
+          {/* Cover front */}
+          <mesh position={[0, 0, D / 2]}>
+            <planeGeometry args={[W, H]} />
+            <primitive object={coverMat} attach="material" />
+          </mesh>
+          {/* Page face */}
+          <mesh position={[0, 0, D / 2 - 0.001]}>
+            <planeGeometry args={[W * 0.94, H * 0.92]} />
+            <primitive object={pageMat} attach="material" />
+          </mesh>
+          {/* Decorative text lines */}
+          {lines.map(i => (
+            <mesh key={i} position={[W * 0.05, H * 0.32 - i * 0.1 * scale, D / 2 + 0.002]}>
+              <planeGeometry args={[W * 0.72 - (i % 3) * 0.06 * scale, 0.018 * scale]} />
+              <primitive object={lineMat} attach="material" />
+            </mesh>
+          ))}
+          {/* Pages right edge */}
+          <mesh position={[W / 2, 0, 0]} rotation={[0, Math.PI / 2, 0]}>
+            <planeGeometry args={[D, H]} />
+            <primitive object={pageMat} attach="material" />
+          </mesh>
+          {/* Top edge */}
+          <mesh position={[0, H / 2, 0]} rotation={[Math.PI / 2, 0, 0]}>
+            <planeGeometry args={[W, D]} />
+            <primitive object={pageMat} attach="material" />
+          </mesh>
+        </group>
+      </group>
+
+      {/* ── FLIPPING PAGE — arcs over from right to left ── */}
+      <group ref={pageFlipRef as React.RefObject<THREE.Group>} position={[0, 0, 0]}>
+        <group position={[W / 2, 0, 0]}>
+          <mesh position={[0, 0, 0.003]} material={pageMat}>
+            <planeGeometry args={[W * 0.93, H * 0.9]} />
+          </mesh>
+          {lines.slice(0, 6).map(i => (
+            <mesh key={i} position={[W * 0.03, H * 0.28 - i * 0.1 * scale, 0.004]} material={lineMat}>
+              <planeGeometry args={[W * 0.68, 0.018 * scale]} />
+            </mesh>
+          ))}
+        </group>
+      </group>
+    </group>
+  )
+}
+
+// ── ORBITING BOOK (closed, 360° orbit around center) ─────────────────────────
+interface OrbitingBookProps {
+  orbitRadius: number
+  orbitSpeed: number
+  startAngle: number
   color: string
   spineColor: string
   accentColor: string
   scale?: number
-  floatOffset?: number
-  floatSpeed?: number
-  title: string
-  genre: string
-  readingProgress?: number // 0–1
 }
 
-function Book3D({
-  position, baseRotation, color, spineColor, accentColor,
-  scale = 1, floatOffset = 0, floatSpeed = 0.7,
-  title, genre, readingProgress = 0.5,
-}: Book3DProps) {
+function OrbitingBook({
+  orbitRadius, orbitSpeed, startAngle,
+  color, spineColor, accentColor,
+  scale = 1,
+}: OrbitingBookProps) {
   const groupRef = useRef<THREE.Group>(null)
   const [hovered, setHovered] = useState(false)
-  const [clicked, setClicked] = useState(false)
-  const hoverProgress = useRef(0)
-  const clickProgress = useRef(0)
+  const hoverProg = useRef(0)
 
-  const W = 1.2 * scale
-  const H = 1.7 * scale
-  const D = 0.2 * scale
-  const SW = 0.18 * scale // spine width
+  const W = 0.9 * scale
+  const H = 1.28 * scale
+  const D = 0.14 * scale
 
-  const coverMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(color), roughness: 0.28, metalness: 0.12 })
-  const spineMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(spineColor), roughness: 0.35, metalness: 0.18 })
-  const pageMat  = new THREE.MeshStandardMaterial({ color: new THREE.Color('#f5f0e8'), roughness: 0.9, metalness: 0 })
-  const accentMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentColor), roughness: 0.2, metalness: 0.4, emissive: new THREE.Color(accentColor), emissiveIntensity: hovered ? 0.5 : 0.2 })
-  const glossMat  = new THREE.MeshStandardMaterial({ color: new THREE.Color('#ffffff'), transparent: true, opacity: 0.05, roughness: 0, metalness: 1 })
+  const coverMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(color), roughness: 0.3, metalness: 0.15 })
+  const spineMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(spineColor), roughness: 0.4, metalness: 0.2 })
+  const pageMat  = new THREE.MeshStandardMaterial({ color: new THREE.Color('#f5f0e8'), roughness: 0.9 })
+  const accentMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentColor), roughness: 0.2, metalness: 0.5, emissive: new THREE.Color(accentColor), emissiveIntensity: 0.35 })
+  const glossMat  = new THREE.MeshStandardMaterial({ color: '#ffffff', transparent: true, opacity: 0.06, roughness: 0 })
 
   useFrame((state) => {
     if (!groupRef.current) return
     const t = state.clock.getElapsedTime()
+    const angle = t * orbitSpeed + startAngle
 
-    // Float
-    const floatY = Math.sin(t * floatSpeed + floatOffset) * 0.1
-    groupRef.current.position.y = position[1] + floatY
+    // Full 360° elliptical orbit — wide on X, shallow on Z
+    groupRef.current.position.x = Math.cos(angle) * orbitRadius
+    groupRef.current.position.z = Math.sin(angle) * orbitRadius * 0.42 - 0.2
+    groupRef.current.position.y = Math.sin(t * 0.5 + startAngle) * 0.14
 
-    // Gentle idle sway
-    const idleRY = baseRotation[1] + Math.sin(t * 0.4 + floatOffset) * 0.04
+    // Always face outward (tangent to the orbit circle)
+    groupRef.current.rotation.y = -angle + Math.PI / 2
+    groupRef.current.rotation.x = 0.06
+    groupRef.current.rotation.z = Math.cos(angle) * 0.035
 
-    // Hover: smoothly lean open
-    hoverProgress.current += ((hovered ? 1 : 0) - hoverProgress.current) * 0.08
-    const hoverRotY = hoverProgress.current * 0.28
-    const hoverScale = 1 + hoverProgress.current * 0.07
-    const hoverZ = hoverProgress.current * 0.25
-
-    // Click: page-fan
-    clickProgress.current += ((clicked ? 1 : 0) - clickProgress.current) * 0.12
-    const clickRY = Math.sin(clickProgress.current * Math.PI) * -0.45
-
-    groupRef.current.rotation.x = baseRotation[0]
-    groupRef.current.rotation.y = idleRY + hoverRotY + clickRY
-    groupRef.current.rotation.z = baseRotation[2]
-    groupRef.current.scale.setScalar(hoverScale)
-    groupRef.current.position.z = position[2] + hoverZ
+    // Hover: lift up smoothly
+    hoverProg.current += ((hovered ? 1 : 0) - hoverProg.current) * 0.1
+    groupRef.current.position.y += hoverProg.current * 0.35
+    groupRef.current.scale.setScalar(1 + hoverProg.current * 0.1)
   })
-
-  const handleClick = useCallback(() => {
-    setClicked(true)
-    setTimeout(() => setClicked(false), 700)
-  }, [])
 
   return (
     <group
       ref={groupRef}
-      position={position}
-      rotation={baseRotation}
       onPointerEnter={(e) => { e.stopPropagation(); setHovered(true); document.body.style.cursor = 'pointer' }}
       onPointerLeave={() => { setHovered(false); document.body.style.cursor = 'default' }}
-      onClick={(e) => { e.stopPropagation(); handleClick() }}
     >
-      {/* ── Front cover ── */}
+      {/* Front cover */}
       <mesh position={[0, 0, D / 2]} material={coverMat}>
         <planeGeometry args={[W, H]} />
       </mesh>
-
-      {/* ── Accent stripe on cover ── */}
-      <mesh position={[-W / 2 + SW + 0.06 * scale, 0, D / 2 + 0.001]} material={accentMat}>
-        <planeGeometry args={[0.04 * scale, H * 0.82]} />
+      {/* Accent stripe */}
+      <mesh position={[-W / 2 + 0.12 * scale, 0, D / 2 + 0.001]} material={accentMat}>
+        <planeGeometry args={[0.035 * scale, H * 0.8]} />
       </mesh>
-
-      {/* ── Reading progress bar on cover (bottom stripe) ── */}
-      <mesh position={[-W / 2 + SW + (W - SW) * readingProgress / 2, -H / 2 + 0.04 * scale, D / 2 + 0.002]} material={accentMat}>
-        <planeGeometry args={[(W - SW) * readingProgress, 0.025 * scale]} />
+      {/* Gloss */}
+      <mesh position={[0.05 * scale, 0.15 * scale, D / 2 + 0.002]} material={glossMat}>
+        <planeGeometry args={[W * 0.3, H * 0.52]} />
       </mesh>
-
-      {/* ── Gloss highlight ── */}
-      <mesh position={[0.05 * scale, 0.2 * scale, D / 2 + 0.002]} material={glossMat}>
-        <planeGeometry args={[W * 0.28, H * 0.55]} />
-      </mesh>
-
-      {/* ── Back cover ── */}
-      <mesh position={[0, 0, -D / 2]} rotation={[0, Math.PI, 0]} material={new THREE.MeshStandardMaterial({ color: new THREE.Color(spineColor), roughness: 0.4 })}>
+      {/* Back cover */}
+      <mesh position={[0, 0, -D / 2]} rotation={[0, Math.PI, 0]} material={spineMat}>
         <planeGeometry args={[W, H]} />
       </mesh>
-
-      {/* ── Spine (left face) ── */}
+      {/* Spine left */}
       <mesh position={[-W / 2, 0, 0]} rotation={[0, -Math.PI / 2, 0]} material={spineMat}>
         <planeGeometry args={[D, H]} />
       </mesh>
-
-      {/* ── Pages (right edge) ── */}
+      {/* Pages right */}
       <mesh position={[W / 2, 0, 0]} rotation={[0, Math.PI / 2, 0]} material={pageMat}>
         <planeGeometry args={[D, H]} />
       </mesh>
-
-      {/* ── Top ── */}
+      {/* Top */}
       <mesh position={[0, H / 2, 0]} rotation={[Math.PI / 2, 0, 0]} material={pageMat}>
         <planeGeometry args={[W, D]} />
       </mesh>
-
-      {/* ── Bottom ── */}
+      {/* Bottom */}
       <mesh position={[0, -H / 2, 0]} rotation={[-Math.PI / 2, 0, 0]} material={pageMat}>
         <planeGeometry args={[W, D]} />
       </mesh>
-
-      {/* ── Page-turn dog-ear effect (visible on hover) ── */}
+      {/* Dog-ear corner on hover */}
       {hovered && (
-        <mesh position={[W / 2 - 0.08 * scale, H / 2 - 0.08 * scale, D / 2 + 0.003]} rotation={[0, 0, Math.PI / 4]}>
-          <planeGeometry args={[0.14 * scale, 0.14 * scale]} />
-          <meshStandardMaterial color="#e8e0d0" roughness={0.9} transparent opacity={0.9} />
+        <mesh
+          position={[W / 2 - 0.07 * scale, H / 2 - 0.07 * scale, D / 2 + 0.003]}
+          rotation={[0, 0, Math.PI / 4]}
+        >
+          <planeGeometry args={[0.12 * scale, 0.12 * scale]} />
+          <meshStandardMaterial color="#e8e0d0" roughness={0.9} transparent opacity={0.85} />
         </mesh>
       )}
     </group>
   )
 }
 
-// ── Floating sparkle particle ─────────────────────────────────────────────────
+// ── FLOATING SPARKLE PARTICLE ─────────────────────────────────────────────────
 function Particle({ position, color }: { position: [number, number, number]; color: string }) {
   const ref = useRef<THREE.Mesh>(null)
-  const speed = 0.3 + Math.random() * 0.5
-  const offset = Math.random() * Math.PI * 2
+  const speed = useRef(0.3 + Math.random() * 0.5)
+  const offset = useRef(Math.random() * Math.PI * 2)
   useFrame((state) => {
     if (!ref.current) return
-    const t = state.clock.getElapsedTime() * speed + offset
-    ref.current.position.y = position[1] + Math.sin(t) * 0.35
-    ;(ref.current.material as THREE.MeshStandardMaterial).opacity = 0.15 + Math.sin(t * 1.4) * 0.12
+    const t = state.clock.getElapsedTime() * speed.current + offset.current
+    ref.current.position.y = position[1] + Math.sin(t) * 0.3
+    ;(ref.current.material as THREE.MeshStandardMaterial).opacity = 0.12 + Math.sin(t * 1.3) * 0.1
   })
   return (
     <mesh ref={ref} position={position}>
-      <sphereGeometry args={[0.018, 6, 6]} />
-      <meshStandardMaterial color={color} emissive={color} emissiveIntensity={2.5} transparent opacity={0.25} />
+      <sphereGeometry args={[0.016, 6, 6]} />
+      <meshStandardMaterial color={color} emissive={color} emissiveIntensity={2.5} transparent opacity={0.2} />
     </mesh>
   )
 }
 
-// ── Glow ring ─────────────────────────────────────────────────────────────────
-function GlowRing({ radius, tubeRadius, color, speed, offset, tiltX }: {
-  radius: number; tubeRadius: number; color: string; speed: number; offset: number; tiltX: number
+// ── GLOW RING ─────────────────────────────────────────────────────────────────
+function GlowRing({ radius, tube, color, rotSpeed, tiltX, tiltZ = 0 }: {
+  radius: number; tube: number; color: string; rotSpeed: number; tiltX: number; tiltZ?: number
 }) {
   const ref = useRef<THREE.Mesh>(null)
   useFrame((state) => {
     if (!ref.current) return
-    const t = state.clock.getElapsedTime()
-    ref.current.rotation.x = tiltX + Math.sin(t * 0.18) * 0.1
-    ref.current.rotation.z = t * speed + offset
+    ref.current.rotation.x = tiltX + Math.sin(state.clock.getElapsedTime() * 0.15) * 0.08
+    ref.current.rotation.z = tiltZ + state.clock.getElapsedTime() * rotSpeed
   })
   return (
     <mesh ref={ref}>
-      <torusGeometry args={[radius, tubeRadius, 16, 120]} />
-      <meshStandardMaterial color={color} emissive={color} emissiveIntensity={1.8} transparent opacity={0.22} />
+      <torusGeometry args={[radius, tube, 16, 120]} />
+      <meshStandardMaterial color={color} emissive={color} emissiveIntensity={2} transparent opacity={0.2} />
     </mesh>
   )
 }
 
-// ── Orbiting mini book ────────────────────────────────────────────────────────
-function OrbitBook({ radius, speed, offset, color, yScale }: {
-  radius: number; speed: number; offset: number; color: string; yScale: number
-}) {
-  const ref = useRef<THREE.Group>(null)
-  useFrame((state) => {
-    if (!ref.current) return
-    const t = state.clock.getElapsedTime() * speed + offset
-    ref.current.position.x = Math.cos(t) * radius
-    ref.current.position.z = Math.sin(t) * radius * 0.3 - 0.4
-    ref.current.position.y = Math.sin(t * 0.65 + offset) * yScale
-    ref.current.rotation.y = -t * 1.2
-  })
-  const c = new THREE.Color(color)
+// ── ORBIT TRAIL ───────────────────────────────────────────────────────────────
+function OrbitTrail({ radius }: { radius: number }) {
   return (
-    <group ref={ref}>
-      <mesh>
-        <boxGeometry args={[0.2, 0.28, 0.035]} />
-        <meshStandardMaterial color={c} roughness={0.3} metalness={0.25} emissive={c} emissiveIntensity={0.25} />
-      </mesh>
-    </group>
+    <mesh rotation={[Math.PI / 2, 0, 0]}>
+      <torusGeometry args={[radius, 0.004, 8, 120]} />
+      <meshStandardMaterial color="#ffffff" transparent opacity={0.055} />
+    </mesh>
   )
 }
 
-// ── Particles config ──────────────────────────────────────────────────────────
-const PARTICLES: Array<[number, number, number, string]> = [
-  [-2.2, 1.0, -0.5, '#a78bfa'], [2.0, 0.8, -0.8, '#60a5fa'],
-  [-1.5, -1.2, -0.3, '#f472b6'], [2.3, -0.6, -0.6, '#34d399'],
-  [0.5, 1.8, -1.0, '#fbbf24'], [-2.5, -0.2, -0.8, '#a78bfa'],
-  [1.8, 1.5, -1.2, '#60a5fa'], [-0.8, -1.8, -0.5, '#f472b6'],
-  [2.6, 0.2, -1.0, '#34d399'], [-1.0, 1.4, -0.2, '#fbbf24'],
-  [0.2, -2.0, -0.7, '#a78bfa'], [-2.8, 0.8, -1.1, '#60a5fa'],
+// ── STATIC CONFIG ─────────────────────────────────────────────────────────────
+const ORBIT_BOOKS = [
+  { color: '#6d28d9', spineColor: '#4c1d95', accentColor: '#c4b5fd', startAngle: 0 },
+  { color: '#0f766e', spineColor: '#134e4a', accentColor: '#5eead4', startAngle: Math.PI * 2 / 5 },
+  { color: '#be185d', spineColor: '#831843', accentColor: '#f9a8d4', startAngle: Math.PI * 4 / 5 },
+  { color: '#b45309', spineColor: '#78350f', accentColor: '#fcd34d', startAngle: Math.PI * 6 / 5 },
+  { color: '#1e40af', spineColor: '#1e3a8a', accentColor: '#93c5fd', startAngle: Math.PI * 8 / 5 },
 ]
 
-// ── Scene ─────────────────────────────────────────────────────────────────────
+const PARTICLES: Array<[number, number, number, string]> = [
+  [-2.8, 1.0, -0.6, '#a78bfa'], [2.6,  0.8, -0.9, '#60a5fa'],
+  [-1.8, -1.4, -0.4, '#f472b6'], [2.8, -0.8, -0.7, '#34d399'],
+  [0.4,  2.0, -1.1, '#fbbf24'], [-3.0, -0.3, -0.9, '#a78bfa'],
+  [2.0,  1.6, -1.3, '#60a5fa'], [-0.6, -2.2, -0.5, '#f472b6'],
+  [3.0,  0.3, -1.1, '#34d399'], [-1.2,  1.6, -0.3, '#fbbf24'],
+]
+
+// ── SCENE ─────────────────────────────────────────────────────────────────────
 function Scene() {
   return (
     <>
-      <PerspectiveCamera makeDefault position={[0, 0.3, 5.8]} fov={44} />
+      <PerspectiveCamera makeDefault position={[0, 1.8, 6.5]} fov={42} />
 
-      {/* Lighting */}
-      <ambientLight intensity={0.45} />
-      <directionalLight position={[5, 9, 5]} intensity={1.6} color="#ffffff" castShadow />
-      <directionalLight position={[-4, 2, 4]} intensity={0.9} color="#818cf8" />
-      <pointLight position={[2.5, 4, 2.5]} intensity={2.2} color="#60a5fa" distance={9} />
-      <pointLight position={[-2.5, -1, 2]} intensity={1.8} color="#c084fc" distance={7} />
-      <pointLight position={[0, -2.5, 3]} intensity={1.2} color="#f472b6" distance={6} />
+      <ambientLight intensity={0.5} />
+      <directionalLight position={[4, 8, 4]} intensity={1.8} color="#ffffff" castShadow />
+      <directionalLight position={[-4, 3, 3]} intensity={0.9} color="#818cf8" />
+      <pointLight position={[0, 3, 2]} intensity={2.5} color="#60a5fa" distance={8} />
+      <pointLight position={[-2, -1, 2]} intensity={1.6} color="#c084fc" distance={7} />
+      <pointLight position={[0, -2, 2]} intensity={1.2} color="#f472b6" distance={6} />
+      {/* Warm reading lamp over the open book */}
+      <pointLight position={[0, 2.5, 1]} intensity={3.2} color="#fcd34d" distance={5} />
 
-      {/* Main books */}
-      <Book3D
-        position={[0.1, 0.1, 0]}
-        baseRotation={[0.06, -0.32, 0.02]}
-        color="#1d4ed8" spineColor="#1e3a8a" accentColor="#93c5fd"
-        scale={1.45} floatOffset={0} floatSpeed={0.65}
-        title="The Last Lighthouse Keeper" genre="Novel"
-        readingProgress={0.65}
-      />
-      <Book3D
-        position={[-2.0, 0.5, -0.9]}
-        baseRotation={[0.05, 0.52, -0.04]}
-        color="#6d28d9" spineColor="#4c1d95" accentColor="#c4b5fd"
-        scale={0.88} floatOffset={1.3} floatSpeed={0.72}
-        title="Ember Crown Chronicles" genre="Fantasy"
-        readingProgress={0.3}
-      />
-      <Book3D
-        position={[1.95, -0.15, -0.8]}
-        baseRotation={[0.04, -0.58, 0.03]}
-        color="#0f766e" spineColor="#134e4a" accentColor="#5eead4"
-        scale={0.82} floatOffset={2.2} floatSpeed={0.6}
-        title="Beyond the Nebula's Edge" genre="Sci-Fi"
-        readingProgress={0.8}
-      />
-      <Book3D
-        position={[-1.25, -1.3, -1.3]}
-        baseRotation={[0.08, 0.3, 0.06]}
-        color="#be185d" spineColor="#831843" accentColor="#f9a8d4"
-        scale={0.68} floatOffset={0.7} floatSpeed={0.78}
-        title="A Summer in Montmartre" genre="Romance"
-        readingProgress={0.45}
-      />
-      <Book3D
-        position={[1.25, 1.4, -1.6]}
-        baseRotation={[-0.05, -0.42, -0.03]}
-        color="#b45309" spineColor="#78350f" accentColor="#fcd34d"
-        scale={0.62} floatOffset={1.9} floatSpeed={0.68}
-        title="Pip & the Moon Garden" genre="Children's"
-        readingProgress={0.2}
-      />
+      <OrbitTrail radius={2.55} />
 
-      {/* Orbiting mini books */}
-      <OrbitBook radius={2.7} speed={0.22} offset={0} color="#60a5fa" yScale={0.3} />
-      <OrbitBook radius={2.7} speed={0.22} offset={Math.PI} color="#f472b6" yScale={0.25} />
-      <OrbitBook radius={2.1} speed={0.16} offset={Math.PI / 2} color="#34d399" yScale={0.2} />
+      {ORBIT_BOOKS.map((b, i) => (
+        <OrbitingBook
+          key={i}
+          orbitRadius={2.55}
+          orbitSpeed={0.28}
+          startAngle={b.startAngle}
+          color={b.color}
+          spineColor={b.spineColor}
+          accentColor={b.accentColor}
+          scale={0.82}
+        />
+      ))}
 
-      {/* Glow rings */}
-      <GlowRing radius={2.4} tubeRadius={0.007} color="#3b82f6" speed={0.08} offset={0} tiltX={Math.PI * 0.42} />
-      <GlowRing radius={1.9} tubeRadius={0.005} color="#8b5cf6" speed={-0.06} offset={1.2} tiltX={Math.PI * 0.35} />
+      {/* The pulpit open book at center */}
+      <OpenBook scale={1.15} />
 
-      {/* Particles */}
+      <GlowRing radius={2.9} tube={0.006} color="#3b82f6" rotSpeed={0.06}  tiltX={Math.PI * 0.4} />
+      <GlowRing radius={2.2} tube={0.004} color="#8b5cf6" rotSpeed={-0.05} tiltX={Math.PI * 0.35} tiltZ={0.8} />
+
       {PARTICLES.map(([x, y, z, c], i) => (
         <Particle key={i} position={[x, y, z]} color={c} />
       ))}
@@ -287,7 +408,7 @@ function Scene() {
   )
 }
 
-// ── Root export ───────────────────────────────────────────────────────────────
+// ── ROOT EXPORT ───────────────────────────────────────────────────────────────
 export default function BookScene3D() {
   return (
     <Canvas shadows dpr={[1, 1.5]} style={{ background: 'transparent' }} gl={{ antialias: true }}>
