@@ -180,7 +180,7 @@ function OpenBook({ scale = 1 }: { scale?: number }) {
       </group>
 
       {/* ── FLIPPING PAGE — arcs over from right to left ── */}
-      <group ref={pageFlipRef as React.RefObject<THREE.Group>} position={[0, 0, 0]}>
+<group ref={pageFlipRef as unknown as React.RefObject<THREE.Group>} position={[0, 0, 0]}>
         <group position={[W / 2, 0, 0]}>
           <mesh position={[0, 0, 0.003]} material={pageMat}>
             <planeGeometry args={[W * 0.93, H * 0.9]} />
